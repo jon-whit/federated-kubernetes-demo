@@ -1,0 +1,3 @@
+httpsCertDir: /certs/authorizer
+fgaStoreID: 01HSNVPXRVE6MGW080RPZ4C880
+fgaAddr: http://openfga:8080

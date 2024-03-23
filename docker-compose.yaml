@@ -1,0 +1,191 @@
+version: '3'
+
+volumes:
+  postgres_data:
+    driver: local
+
+services:
+  openfga-postgres:
+    image: postgres:14
+    container_name: openfga-postgres
+    command: postgres -c 'max_connections=100'
+    networks:
+      - default
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    depends_on:
+      openfga-postgres:
+        condition: service_healthy
+    image: openfga/openfga:v1.5.0
+    container_name: migrate
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://postgres:password@openfga-postgres:5432/postgres?sslmode=disable
+    command: migrate
+    networks:
+      - default
+  
+  openfga:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    image: openfga/openfga:v1.5.0
+    container_name: openfga
+    command: run
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://postgres:password@openfga-postgres:5432/postgres?sslmode=disable
+      - OPENFGA_DATASTORE_MAX_OPEN_CONNS=100
+    networks:
+      - default
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081"]
+      interval: 3s
+      timeout: 30s
+      retries: 3
+
+  keycloak-postgres:
+    image: postgres:14
+    container_name: keycloak-postgres
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: password
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U keycloak" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5        
+    ports:
+      - 5433:5432
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:20.0.5
+    container_name: keycloak
+    command:
+      - start-dev
+    environment:
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: password
+      KC_DB_URL_HOST: keycloak-postgres
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_SCHEMA: public
+      KC_HTTP_PORT: 8082
+      KC_HTTPS_PORT: 8443
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: password
+      KC_HOSTNAME_STRICT: 'false'
+      KC_HTTP_ENABLED: 'false'
+      KC_HTTPS_ENABLED: 'true'
+      KC_HEALTH_ENABLED: 'true'
+      KC_HOSTNAME_ADMIN: localhost
+      KC_HOSTNAME: keycloak
+      KC_FEATURES: declarative-user-profile
+      KC_SPI_EVENTS_LISTENER_OPENFGA_EVENTS_PUBLISHER_API_URL: http://openfga:8080
+      KC_LOG_LEVEL: INFO, com.twogenidentity.keycloak:debug,com.twogenidentity.keycloak.utils:debug
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/cert.pem
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/key.pem
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://keycloak:8082/health/ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 15
+    ports:
+      - 8082:8082
+      - 8443:8443
+    volumes:
+      - ./keycloak/lib/keycloak-openfga-event-publisher-1.0.0.jar:/opt/keycloak/providers/keycloak-openfga-event-publisher-1.0.0.jar
+      - ./keycloak/initialize-poc.sh:/opt/keycloak/initialize-poc.sh
+      - ./certs/keycloak/cert.pem:/opt/keycloak/conf/cert.pem
+      - ./certs/keycloak/key.pem:/opt/keycloak/conf/key.pem
+    depends_on:
+      - keycloak-postgres
+
+  keycloak-import:
+    depends_on:
+      openfga:
+        condition: service_healthy 
+      keycloak:
+        condition: service_healthy
+    image: quay.io/keycloak/keycloak:21.1
+    container_name: keycloak-import
+    restart: "no"
+    entrypoint: [
+      "sh", 
+      "-c", 
+      "echo 'Waiting 10 secs for importing Keycloak configuration...';sleep 10;/opt/keycloak/import.sh"
+    ]
+    environment:
+      KEYCLOAK_URL: http://keycloak:8082
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: password 
+    volumes:        
+      - ./keycloak/initialize-poc.sh:/opt/keycloak/import.sh
+
+  etcd:
+    image: "registry.k8s.io/etcd:3.5.9-0"
+    command: 
+      - etcd
+      - '--data-dir=/data'
+      - '--name=etcd1'
+      - '--initial-advertise-peer-urls=http://etcd:2380'
+      - '--listen-peer-urls=http://0.0.0.0:2380'
+      - '--advertise-client-urls=http://etcd:2379'
+      - '--listen-client-urls=http://0.0.0.0:2379'      
+      - '--initial-cluster=etcd1=http://etcd:2380'
+
+  api:
+    image: "registry.k8s.io/kube-apiserver:v1.28.3"
+    depends_on:
+      - etcd
+      - keycloak
+    ports:
+      - "127.0.0.1:6443:6443"
+    command: 
+      - kube-apiserver
+      - '--etcd-servers=http://etcd:2379'
+      - '--oidc-issuer-url=https://keycloak:8443/realms/master'
+      - '--oidc-client-id=kube-gatekeeper'
+      - '--oidc-ca-file=/certs/keycloak/ca.pem'
+      - '--oidc-username-prefix=-'
+      - '--token-auth-file=/config/static-tokens.txt'
+      - '--service-account-issuer=https://default.local'
+      - '--service-account-key-file=/var/run/kubernetes/apiserver.crt'
+      - '--service-account-signing-key-file=/var/run/kubernetes/apiserver.key'
+      - '--authorization-webhook-config-file=/config/webhook-authz.yaml'
+      - '--authorization-mode=Webhook'
+      - '--authorization-webhook-cache-authorized-ttl=0s'
+      - '--authorization-webhook-cache-unauthorized-ttl=0s'
+      - '--authorization-webhook-version=v1'
+    volumes:
+      - ./certs:/certs
+      - ./config:/config
+
+  authorizer:
+    depends_on:
+      - openfga
+    image: "jon-whit/openfga-authorizer:latest"
+    command:
+      - --kubeconfig=/config/authorizer-kubeconfig.yaml
+      - --config=/config/authorizer-config.yaml
+    ports:
+      - "9443:9443"
+    volumes:
+      - ./certs:/certs
+      - ./config:/config

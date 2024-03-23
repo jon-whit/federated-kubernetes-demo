@@ -1,0 +1,24 @@
+# Webhook Authorization configuration for Kubernetes API server
+# See 
+apiVersion: v1
+kind: Config
+clusters:
+- name: openfga-authorizer
+  cluster:
+    certificate-authority: /certs/authorizer/ca.crt
+    server: https://authorizer:9443/authorize
+
+# users refers to the Kube api-server's webhook configuration.
+users:
+- name: api-server-client
+  user:
+    client-certificate: /certs/authorizer/server.crt  # cert for the webhook plugin to use
+    client-key: /certs/authorizer/server.key          # key matching the cert
+
+# kubeconfig files require a context. Provide one for the API Server.
+current-context: webhook
+contexts:
+- context:
+    cluster: openfga-authorizer
+    user: api-server-client
+  name: webhook

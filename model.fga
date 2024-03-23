@@ -1,0 +1,52 @@
+model
+  schema 1.1
+
+# Managed by Keycloak
+type user
+
+type group
+  relations
+    define assignee: [user, user with temporal_grant]
+
+type role
+  relations
+    define assignee: [user] or assignee from parent or assignee from parent_group
+    define parent: [role]
+    define parent_group: [group]
+
+# Managed by Kubernetes OpenFGA Webhook Authorizer
+type k8s_namespace
+  relations
+    define operates_in: [user, group#assignee]
+
+type k8s_resource
+  relations
+    define create: [user, k8s_role#assignee]
+    define get: [user, k8s_role#assignee]
+    define list: [user, k8s_role#assignee]
+    define watch: [user, k8s_role#assignee]
+    define update: [user, k8s_role#assignee]
+    define patch: [user, k8s_role#assignee]
+    define delete: [user, k8s_role#assignee]
+
+type k8s_role
+  relations
+    define assignee: namespaced_assignee and operates_in from contains
+    define contains: [k8s_namespace]
+    define namespaced_assignee: [k8s_rolebinding#namespaced_assignee]
+
+type k8s_rolebinding
+  relations
+    define namespaced_assignee: [user, group#assignee]
+
+type k8s_clusterrole
+  relations
+    define assignee: [k8s_clusterrolebinding#assignee]
+
+type k8s_clusterrolebinding
+  relations
+    define assignee: [user, group#assignee]
+
+condition temporal_grant(current_timestamp: timestamp, grant_timestamp: timestamp, grant_duration: duration) {
+  current_timestamp <= grant_timestamp+grant_duration
+}
