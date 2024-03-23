@@ -1,6 +1,14 @@
 # Federated IAM for Kubernetes with OpenFGA
 An sample repository demonstrating how to federate Identity based policies and Access Management based policies between Kubernetes and Keycloak.
 
+**KubeCon + CloudNativeCon (Paris, 2024) Presentation:** https://www.youtube.com/watch?v=UaK1EnRgrng
+
+**KubeCon + CloudNativeCon Event on Sched:** https://kccnceu2024.sched.com/event/592ba9200501041ccff661838a4db20b
+
+The event on sched above includes the slide deck with links etc..
+
+
+
 ## Certificate Generation
 ### Keycloak
 ```
